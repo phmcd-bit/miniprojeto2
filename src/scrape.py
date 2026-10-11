@@ -45,6 +45,10 @@ PAUSA = 1.5
 
 DIR_RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
 
+MESES_PT = [
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]
 
 def baixar_html(url: str, dados_post: dict | None = None) -> str:
     """Baixa uma página e devolve o HTML.
@@ -75,6 +79,16 @@ def parsear_mares(html: str, ano: int, mes: int) -> list[dict]:
 
     soup = BeautifulSoup(html, "html.parser")
     tabela = soup.select_one("table:has(tr.tabla_mareas_fila)")
+
+    titulo = next(
+        tr.get_text(" ", strip=True)
+        for tr in tabela.select("tr")
+        if tr.get_text(strip=True)
+    )
+
+    esperado = f"{MESES_PT[mes - 1]} de {ano}"
+    if esperado not in titulo.lower():
+        raise ValueError(f"Esperava '{esperado}', mas o título da tabela é '{titulo}'")
 
     linhas = []
     for tr in tabela.select("tr:has(td.tabla_mareas_dia)"):
@@ -164,8 +178,21 @@ def coletar_mares_do_ano(ano: int) -> pd.DataFrame:
     TODO: iterar de janeiro a dezembro, chamar `baixar_html` + `parsear_mares`
     e dormir `PAUSA` entre requisições.
     """
-    raise NotImplementedError
 
+    todas_linhas = []
+    for mes in range(1, 13):
+        dados_post = {"fecha": f"{ano}-{mes:02d}-01"}
+        html = baixar_html(URL_BASE, dados_post)
+        try:  
+            linhas_mes = parsear_mares(html, ano, mes)
+        except ValueError as e:  
+            print(f"Parando no mês {mes}/{ano}: {e}")  
+            break  
+        todas_linhas.extend(linhas_mes)
+        time.sleep(PAUSA)
+
+    df = pd.DataFrame(todas_linhas)
+    return df
 
 def main(ano: int = 2025) -> None:
     DIR_RAW.mkdir(parents=True, exist_ok=True)
@@ -174,14 +201,42 @@ def main(ano: int = 2025) -> None:
     # TODO: montar os quatro CSVs em DIR_RAW.
     #
     #   1. tábua de marés do ano inteiro   -> mares_{ano}.csv
+
+    df_mares = coletar_mares_do_ano(ano)
+    df_mares.to_csv(DIR_RAW / f"mares_{ano}.csv", index=False)
+    time.sleep(PAUSA)
+
     #   2. marés do mês corrente           -> mares_previsao.csv
+
+    dados_post = {"fecha": f"{hoje.year}-{hoje.month:02d}-01"}
+    html_mes = baixar_html(URL_BASE, dados_post)
+    df_previsao = pd.DataFrame(parsear_mares(html_mes, hoje.year, hoje.month))
+    df_previsao.to_csv(DIR_RAW / "mares_previsao.csv", index=False)
+    time.sleep(PAUSA)
+
     #   3. previsão de ondas               -> ondas.csv
+
+    html_ondas = baixar_html(URL_ONDAS)
+    df_ondas = pd.DataFrame(parsear_previsao(html_ondas, hoje.year))
+    df_ondas = df_ondas.rename(columns={"valor": "altura_onda_m"})
+    df_ondas.to_csv(DIR_RAW / "ondas.csv", index=False)
+    time.sleep(PAUSA)
+
     #   4. previsão de vento               -> vento.csv
+
+    html_vento = baixar_html(URL_VENTO)
+    df_vento = pd.DataFrame(parsear_previsao(html_vento, hoje.year))
+    df_vento = df_vento.rename(columns={"valor": "velocidade_vento_kmh"})
+    df_vento.to_csv(DIR_RAW / "vento.csv", index=False)
+
     #
     # Imprima quantas linhas cada arquivo recebeu: um CSV vazio é o erro mais
     # comum e o mais silencioso.
-    raise NotImplementedError
 
+    print(f"mares_{ano}.csv: {len(df_mares)} linhas")
+    print(f"mares_previsao.csv: {len(df_previsao)} linhas")
+    print(f"ondas.csv: {len(df_ondas)} linhas")
+    print(f"vento.csv: {len(df_vento)} linhas")
 
 if __name__ == "__main__":
     main()
