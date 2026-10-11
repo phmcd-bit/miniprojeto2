@@ -55,8 +55,13 @@ def baixar_html(url: str, dados_post: dict | None = None) -> str:
     TODO: fazer a requisição com `requests`, checar o status e devolver o texto.
     Dica: `resp.raise_for_status()` falha alto quando o servidor recusa.
     """
-    raise NotImplementedError
+    if dados_post is None:
+        resp = requests.get(url, headers=HEADERS)
+    else:
+        resp = requests.post(url, headers=HEADERS, data=dados_post)
 
+    resp.raise_for_status()
+    return resp.text
 
 def parsear_mares(html: str, ano: int, mes: int) -> list[dict]:
     """Extrai da tábua mensal uma linha por evento de maré.
@@ -67,8 +72,43 @@ def parsear_mares(html: str, ano: int, mes: int) -> list[dict]:
 
     TODO: localizar a tabela no HTML e percorrer as linhas.
     """
-    raise NotImplementedError
 
+    soup = BeautifulSoup(html, "html.parser")
+    tabela = soup.select_one("table:has(tr.tabla_mareas_fila)")
+
+    linhas = []
+    for tr in tabela.select("tr:has(td.tabla_mareas_dia)"):
+        dia = int(tr.select_one("td.tabla_mareas_dia").get_text(" ", strip=True).split()[0])
+        nascer, por = (
+            tr.select_one("td.tabla_mareas_salida_puesta_sol")
+            .get_text(" ", strip=True)
+            .split()
+        )
+        coeficiente = int(
+            tr.select_one("td.tabla_mareas_coeficiente").get_text(" ", strip=True).split()[0]
+        )
+
+        for td in tr.select("td.tabla_mareas_marea"):
+            div_hora = td.select_one("div.tabla_mareas_marea_hora")
+            if div_hora is None or not div_hora.get_text(strip=True):
+                continue  
+
+            altura = td.select_one("span.tabla_mareas_marea_altura_numero")
+            tipo = "baixa" if "tabla_mareas_hora_bajamar" in div_hora["class"] else "alta"
+
+            linhas.append({
+                "ano": ano,
+                "mes": mes,
+                "dia": dia,
+                "hora": div_hora.get_text(strip=True),
+                "altura": float(altura.get_text(strip=True).replace(",", ".")),
+                "tipo": tipo,
+                "coeficiente": coeficiente,
+                "nascer_sol": nascer,
+                "por_sol": por,
+            })
+
+    return linhas
 
 def parsear_previsao(html: str, ano: int) -> list[dict]:
     """Extrai leituras horárias das páginas de previsão de onda e de vento.
@@ -79,7 +119,43 @@ def parsear_previsao(html: str, ano: int) -> list[dict]:
     TODO: percorrer os blocos de dia e, dentro deles, as linhas de hora.
     Atenção à data: o bloco mostra dia e mês abreviado, sem o ano.
     """
-    raise NotImplementedError
+
+    soup = BeautifulSoup(html, "html.parser")
+    blocos_dia = soup.select("div.ficha")  # ADAPTAÇÃO: bloco do dia
+
+    linhas = []
+    ano_atual = ano
+    mes_anterior = None
+    for bloco in blocos_dia:
+        
+        dia = bloco.select_one("span.dia").get_text(strip=True)
+        mes_abrev = bloco.select_one("span.mes").get_text(strip=True)
+        mes = {
+            "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
+            "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12
+        }[mes_abrev.lower()]
+
+        if mes_anterior is not None and mes < mes_anterior:
+            ano_atual += 1
+        mes_anterior = mes
+
+        for tr in bloco.select("div.f_temp_horas"):  
+            celulas = tr.select("div.f_temp_hora")
+            hora = celulas[0].get_text(strip=True)
+            direcao = celulas[1].get_text(strip=True)
+
+            valor = tr.select_one("div.grafico_temp_barra_relleno").get_text(" ", strip=True).split()[0]
+
+            linhas.append({
+                "ano": ano_atual,
+                "mes": mes,
+                "dia": int(dia),
+                "hora": hora,
+                "direcao": direcao,  
+                "valor": float(valor.replace(",", ".")),
+            })
+
+    return linhas
 
 
 def coletar_mares_do_ano(ano: int) -> pd.DataFrame:
