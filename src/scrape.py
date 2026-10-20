@@ -27,6 +27,15 @@ from bs4 import BeautifulSoup
 # Os imports acima são o ponto de partida: você vai usar todos eles.
 # Seu editor pode marcá-los como não usados até você preencher as funções.
 
+class MesIndisponivelError(ValueError):
+    """O servidor devolveu um mês diferente do pedido."""
+
+# Conferência do robots.txt (tabuademares.com, consultado em 19/out/2026):
+# a regra geral (User-agent: *) bloqueia apenas /info e /actions. Este script
+# acessa só /br/paraiba/joao-pessoa (GET e POST de mês), /previsao/ondas e
+# /previsao/vento, que não estão bloqueados, com pausa de PAUSA s entre as
+# requisições. Os termos de uso do site não foram revisados.
+
 URL_BASE = "https://tabuademares.com/br/paraiba/joao-pessoa"
 URL_ONDAS = f"{URL_BASE}/previsao/ondas"
 URL_VENTO = f"{URL_BASE}/previsao/vento"
@@ -60,9 +69,9 @@ def baixar_html(url: str, dados_post: dict | None = None) -> str:
     Dica: `resp.raise_for_status()` falha alto quando o servidor recusa.
     """
     if dados_post is None:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=HEADERS, timeout=30)
     else:
-        resp = requests.post(url, headers=HEADERS, data=dados_post)
+        resp = requests.post(url, headers=HEADERS, data=dados_post, timeout=30)
 
     resp.raise_for_status()
     return resp.text
@@ -88,7 +97,7 @@ def parsear_mares(html: str, ano: int, mes: int) -> list[dict]:
 
     esperado = f"{MESES_PT[mes - 1]} de {ano}"
     if esperado not in titulo.lower():
-        raise ValueError(f"Esperava '{esperado}', mas o título da tabela é '{titulo}'")
+        raise MesIndisponivelError(f"Esperava '{esperado}', mas o título da tabela é '{titulo}'")
 
     linhas = []
     for tr in tabela.select("tr:has(td.tabla_mareas_dia)"):
@@ -185,7 +194,7 @@ def coletar_mares_do_ano(ano: int) -> pd.DataFrame:
         html = baixar_html(URL_BASE, dados_post)
         try:  
             linhas_mes = parsear_mares(html, ano, mes)
-        except ValueError as e:  
+        except MesIndisponivelError as e:  
             print(f"Parando no mês {mes}/{ano}: {e}")  
             break  
         todas_linhas.extend(linhas_mes)
@@ -193,6 +202,11 @@ def coletar_mares_do_ano(ano: int) -> pd.DataFrame:
 
     df = pd.DataFrame(todas_linhas)
     return df
+
+def gravar_csv(df: pd.DataFrame, caminho: Path) -> None:
+    if df.empty:
+        raise RuntimeError(f"{caminho.name}: nenhuma linha coletada, CSV não gravado")
+    df.to_csv(caminho, index=False)
 
 def main(ano: int = 2025) -> None:
     DIR_RAW.mkdir(parents=True, exist_ok=True)
@@ -203,7 +217,7 @@ def main(ano: int = 2025) -> None:
     #   1. tábua de marés do ano inteiro   -> mares_{ano}.csv
 
     df_mares = coletar_mares_do_ano(ano)
-    df_mares.to_csv(DIR_RAW / f"mares_{ano}.csv", index=False)
+    gravar_csv(df_mares, DIR_RAW / f"mares_{ano}.csv")
     time.sleep(PAUSA)
 
     #   2. marés do mês corrente           -> mares_previsao.csv
@@ -211,7 +225,7 @@ def main(ano: int = 2025) -> None:
     dados_post = {"fecha": f"{hoje.year}-{hoje.month:02d}-01"}
     html_mes = baixar_html(URL_BASE, dados_post)
     df_previsao = pd.DataFrame(parsear_mares(html_mes, hoje.year, hoje.month))
-    df_previsao.to_csv(DIR_RAW / "mares_previsao.csv", index=False)
+    gravar_csv(df_previsao, DIR_RAW / "mares_previsao.csv")
     time.sleep(PAUSA)
 
     #   3. previsão de ondas               -> ondas.csv
@@ -219,7 +233,7 @@ def main(ano: int = 2025) -> None:
     html_ondas = baixar_html(URL_ONDAS)
     df_ondas = pd.DataFrame(parsear_previsao(html_ondas, hoje.year))
     df_ondas = df_ondas.rename(columns={"valor": "altura_onda_m"})
-    df_ondas.to_csv(DIR_RAW / "ondas.csv", index=False)
+    gravar_csv(df_ondas, DIR_RAW / "ondas.csv")
     time.sleep(PAUSA)
 
     #   4. previsão de vento               -> vento.csv
@@ -227,7 +241,8 @@ def main(ano: int = 2025) -> None:
     html_vento = baixar_html(URL_VENTO)
     df_vento = pd.DataFrame(parsear_previsao(html_vento, hoje.year))
     df_vento = df_vento.rename(columns={"valor": "velocidade_vento_kmh"})
-    df_vento.to_csv(DIR_RAW / "vento.csv", index=False)
+    gravar_csv(df_vento, DIR_RAW / "vento.csv")
+    time.sleep(PAUSA)
 
     #
     # Imprima quantas linhas cada arquivo recebeu: um CSV vazio é o erro mais
